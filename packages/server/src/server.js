@@ -22,6 +22,8 @@ const StorageMethod = require('./api/storage/storage-method.js');
 const { errorMiddleware, createBasicAuthMiddleware } = require('./api/express-utils.js');
 const { startPsiCollectCron } = require('./cron/psi-collect.js');
 const { startDeleteOldBuildsCron } = require('./cron/delete-old-builds');
+const { MonitorScheduler } = require('./cron/monitor-scheduler.js');
+const { startCleanupCron } = require('./cron/cleanup-old-data.js');
 const version = require('../package.json').version;
 
 const DIST_FOLDER = path.join(__dirname, '../dist');
@@ -69,10 +71,27 @@ async function createApp(options) {
   app.use(errorMiddleware);
 
   log('[createApp] launching cron jobs');
-  startPsiCollectCron(storageMethod, options);
-  startDeleteOldBuildsCron(storageMethod, options);
 
-  return { app, storageMethod };
+  // Initialize monitor scheduler for automated page monitoring
+  const monitorScheduler = new MonitorScheduler(storageMethod, options);
+  await monitorScheduler.initialize();
+
+  // Add scheduler to context for API access
+  context.monitorScheduler = monitorScheduler;
+  context.triggerMonitorRun = async (page) => {
+    await monitorScheduler.triggerImmediateRun(page.id);
+  };
+
+  // Start data cleanup cron (deletes data older than retention period)
+  startCleanupCron(storageMethod, options);
+
+  // Optional: Keep existing PSI collect cron if needed
+  // startPsiCollectCron(storageMethod, options);
+
+  // Optional: Keep existing delete old builds cron (now replaced by cleanup-old-data)
+  // startDeleteOldBuildsCron(storageMethod, options);
+
+  return { app, storageMethod, monitorScheduler };
 }
 
 /**
