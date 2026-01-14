@@ -4,13 +4,13 @@
  * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
  */
 
-import {h} from 'preact';
+import { h } from 'preact';
 import Router from 'preact-router';
 import LazyRoute from 'preact-async-route';
-import {Redirect} from './components/redirect.jsx';
+import { Redirect } from './components/redirect.jsx';
 import './app.css';
-import {Page} from './layout/page.jsx';
-import {LoadingSpinner} from './components/loading-spinner.jsx';
+import { Page } from './layout/page.jsx';
+import { LoadingSpinner } from './components/loading-spinner.jsx';
 
 export const App = () => {
   return (
@@ -61,6 +61,17 @@ export const App = () => {
           )}
           getComponent={() =>
             import('./routes/project-dashboard/project-dashboard.jsx').then(m => m.ProjectDashboard)
+          }
+        />
+        <LazyRoute
+          path="/app/projects/:projectSlug/monitored-pages"
+          loading={() => (
+            <Page>
+              <LoadingSpinner />
+            </Page>
+          )}
+          getComponent={() =>
+            import('./routes/monitored-pages/monitored-pages.jsx').then(m => m.MonitoredPages)
           }
         />
         <LazyRoute
