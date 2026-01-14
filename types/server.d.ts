@@ -13,7 +13,7 @@ declare global {
         [K in TAllKeys]: import('sequelize').DefineAttributeColumnOptions
       };
 
-      export type TableAttributes<T, TAllKeys extends keyof T = keyof T> = {[K in TAllKeys]: {}};
+      export type TableAttributes<T, TAllKeys extends keyof T = keyof T> = { [K in TAllKeys]: {} };
 
       export interface Project {
         id: string;
@@ -134,6 +134,21 @@ declare global {
         updatedAt?: string;
       }
 
+      export interface MonitoredPage {
+        id: string;
+        projectId: string;
+        url: string;
+        label: string;
+        description?: string;
+        schedule: string;
+        enabled: boolean;
+        lighthouseConfig?: Record<string, any>;
+        lastRunAt?: string;
+        nextRunAt?: string;
+        createdAt?: string;
+        updatedAt?: string;
+      }
+
       export interface GetBuildsOptions {
         branch?: string;
         hash?: string;
@@ -215,4 +230,4 @@ declare global {
 
 
 // empty export to keep file a module
-export {};
+export { };

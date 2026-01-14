@@ -9,16 +9,17 @@ const path = require('path');
 const log = require('debug')('lhci:server:sql');
 const logVerbose = require('debug')('lhci:server:sql:verbose');
 const uuid = require('uuid');
-const {Umzug, SequelizeStorage} = require('umzug');
-const {Sequelize, Op} = require('sequelize');
-const {omit, padEnd} = require('@lhci/utils/src/lodash.js');
-const {hashAdminToken, generateAdminToken} = require('../auth.js');
-const {E422} = require('../../express-utils.js');
+const { Umzug, SequelizeStorage } = require('umzug');
+const { Sequelize, Op } = require('sequelize');
+const { omit, padEnd } = require('@lhci/utils/src/lodash.js');
+const { hashAdminToken, generateAdminToken } = require('../auth.js');
+const { E422 } = require('../../express-utils.js');
 const StorageMethod = require('../storage-method.js');
 const projectModelDefn = require('./project-model.js');
 const buildModelDefn = require('./build-model.js');
 const runModelDefn = require('./run-model.js');
 const statisticModelDefn = require('./statistic-model.js');
+const monitoredPageModelDefn = require('./monitored-page-model.js');
 
 /**
  * Clones the object without the fancy function getters/setters.
@@ -143,10 +144,10 @@ function createUmzug(sequelize, options) {
       sequelize,
       tableName: options.sqlMigrationOptions && options.sqlMigrationOptions.tableName,
     }),
-    context: {queryInterface: sequelize.getQueryInterface(), options},
+    context: { queryInterface: sequelize.getQueryInterface(), options },
     migrations: {
       glob: path.posix.join(__dirname.replaceAll('\\', '/'), 'migrations/*.js'),
-      resolve: ({name, path, context}) => {
+      resolve: ({ name, path, context }) => {
         if (!path) throw new Error('unexpected missing path');
 
         const migration = require(path);
@@ -165,7 +166,7 @@ function createUmzug(sequelize, options) {
  * @return {LHCI.ServerCommand.Statistic}
  */
 function normalizeStatistic(statistic) {
-  return {...statistic, version: Number(statistic.version), value: Number(statistic.value)};
+  return { ...statistic, version: Number(statistic.version), value: Number(statistic.value) };
 }
 
 /** @typedef {LHCI.ServerCommand.TableAttributes<LHCI.ServerCommand.Project>} ProjectAttrs */
@@ -180,6 +181,7 @@ function normalizeStatistic(statistic) {
  * @property {import('sequelize').ModelDefined<LHCI.ServerCommand.Build, BuildAttrs>} buildModel
  * @property {import('sequelize').ModelDefined<LHCI.ServerCommand.Run, RunAttrs>} runModel
  * @property {import('sequelize').ModelDefined<LHCI.ServerCommand.Statistic, StatisticAttrs>} statisticModel
+ * @property {import('sequelize').ModelDefined<LHCI.ServerCommand.MonitoredPage, LHCI.ServerCommand.TableAttributes<LHCI.ServerCommand.MonitoredPage>>} monitoredPageModel
  */
 
 /**
@@ -251,7 +253,7 @@ class SqlStorageMethod {
    */
   async _findAll(model, options) {
     if (options.where) {
-      options.where = {...options.where};
+      options.where = { ...options.where };
 
       for (const key of Object.keys(options.where)) {
         if (!key.endsWith('Id') && key !== 'token') continue;
@@ -274,6 +276,9 @@ class SqlStorageMethod {
     if (!runModelDefn.attributes.buildId.references) throw new Error('Invalid runModel');
     if (!statisticModelDefn.attributes.projectId.references) throw new Error('Invalid runModel');
     if (!statisticModelDefn.attributes.buildId.references) throw new Error('Invalid runModel');
+    if (!monitoredPageModelDefn.attributes.projectId.references) {
+      throw new Error('Invalid monitoredPageModel');
+    }
 
     log('[initialize] initializing database connection');
     const sequelize = createSequelize(options);
@@ -295,17 +300,23 @@ class SqlStorageMethod {
       statisticModelDefn.attributes
     );
 
+    monitoredPageModelDefn.attributes.projectId.references.model = projectModel;
+    const monitoredPageModel = sequelize.define(
+      monitoredPageModelDefn.tableName,
+      monitoredPageModelDefn.attributes
+    );
+
     const umzug = createUmzug(sequelize, options);
     if (options.sqlDangerouslyResetDatabase) {
       log('[initialize] resetting database');
-      await umzug.down({to: 0});
+      await umzug.down({ to: 0 });
     }
 
     log('[initialize] running migrations');
     await umzug.up();
     log('[initialize] migrations performed');
 
-    this._sequelize = {sequelize, projectModel, buildModel, runModel, statisticModel};
+    this._sequelize = { sequelize, projectModel, buildModel, runModel, statisticModel, monitoredPageModel };
   }
 
   /** @return {Promise<void>} */
@@ -317,8 +328,8 @@ class SqlStorageMethod {
    * @return {Promise<Array<LHCI.ServerCommand.Project>>}
    */
   async getProjects() {
-    const {projectModel} = this._sql();
-    const projects = await this._findAll(projectModel, {order: orderByName});
+    const { projectModel } = this._sql();
+    const projects = await this._findAll(projectModel, { order: orderByName });
     return projects.map(clone);
   }
 
@@ -327,17 +338,17 @@ class SqlStorageMethod {
    * @return {Promise<void>}
    */
   async deleteProject(projectId) {
-    const {sequelize, projectModel, buildModel, runModel, statisticModel} = this._sql();
+    const { sequelize, projectModel, buildModel, runModel, statisticModel } = this._sql();
     const project = await this._findByPk(projectModel, projectId);
     if (!project) throw new E422('Invalid project ID');
 
     const transaction = await sequelize.transaction();
 
     try {
-      await statisticModel.destroy({where: {projectId}, transaction});
-      await runModel.destroy({where: {projectId}, transaction});
-      await buildModel.destroy({where: {projectId}, transaction});
-      await projectModel.destroy({where: {id: projectId}, transaction});
+      await statisticModel.destroy({ where: { projectId }, transaction });
+      await runModel.destroy({ where: { projectId }, transaction });
+      await buildModel.destroy({ where: { projectId }, transaction });
+      await projectModel.destroy({ where: { id: projectId }, transaction });
 
       await transaction.commit();
     } catch (err) {
@@ -351,8 +362,8 @@ class SqlStorageMethod {
    * @return {Promise<LHCI.ServerCommand.Project | undefined>}
    */
   async findProjectByToken(token) {
-    const {projectModel} = this._sql();
-    const projects = await this._findAll(projectModel, {where: {token}, limit: 1});
+    const { projectModel } = this._sql();
+    const projects = await this._findAll(projectModel, { where: { token }, limit: 1 });
     return clone(projects[0]);
   }
 
@@ -361,7 +372,7 @@ class SqlStorageMethod {
    * @return {Promise<LHCI.ServerCommand.Project | undefined>}
    */
   async findProjectById(projectId) {
-    const {projectModel} = this._sql();
+    const { projectModel } = this._sql();
     const project = await this._findByPk(projectModel, projectId);
     return clone(project || undefined);
   }
@@ -371,8 +382,8 @@ class SqlStorageMethod {
    * @return {Promise<LHCI.ServerCommand.Project | undefined>}
    */
   async findProjectBySlug(slug) {
-    const {projectModel} = this._sql();
-    const projects = await this._findAll(projectModel, {where: {slug}});
+    const { projectModel } = this._sql();
+    const projects = await this._findAll(projectModel, { where: { slug } });
     if (projects.length !== 1) return undefined;
     return clone(projects[0] || undefined);
   }
@@ -390,7 +401,7 @@ class SqlStorageMethod {
    * @return {Promise<LHCI.ServerCommand.Project>}
    */
   async _createProject(unsavedProject) {
-    const {projectModel} = this._sql();
+    const { projectModel } = this._sql();
     if (typeof unsavedProject.name !== 'string') throw new E422('Project name missing');
     if (unsavedProject.name.length < 4) throw new E422('Project name too short');
     const projectId = uuid.v4();
@@ -405,7 +416,7 @@ class SqlStorageMethod {
 
     // Replace the adminToken with the original non-hashed version.
     // This will be the only time it's readable other than reset.
-    return {...clone(this._value(project)), adminToken};
+    return { ...clone(this._value(project)), adminToken };
   }
 
   /**
@@ -413,7 +424,7 @@ class SqlStorageMethod {
    * @return {Promise<void>}
    */
   async updateProject(projectUpdates) {
-    const {projectModel} = this._sql();
+    const { projectModel } = this._sql();
     if (projectUpdates.name.length < 4) throw new E422('Project name too short');
 
     await projectModel.update(
@@ -422,7 +433,7 @@ class SqlStorageMethod {
         externalUrl: projectUpdates.externalUrl,
         baseBranch: projectUpdates.baseBranch,
       },
-      {where: {id: projectUpdates.id}}
+      { where: { id: projectUpdates.id } }
     );
   }
 
@@ -432,9 +443,9 @@ class SqlStorageMethod {
    * @return {Promise<LHCI.ServerCommand.Build[]>}
    */
   async getBuilds(projectId, options = {}) {
-    const {buildModel} = this._sql();
+    const { buildModel } = this._sql();
     const builds = await this._findAll(buildModel, {
-      where: {projectId, ...omit(options, ['limit'], {dropUndefined: true})},
+      where: { projectId, ...omit(options, ['limit'], { dropUndefined: true }) },
       order: orderByCreated,
       limit: options.limit || 10,
     });
@@ -447,15 +458,15 @@ class SqlStorageMethod {
    */
   // eslint-disable-next-line no-unused-vars
   async getBranches(projectId) {
-    const {buildModel} = this._sql();
+    const { buildModel } = this._sql();
     const builds = await this._findAll(buildModel, {
-      where: {projectId},
+      where: { projectId },
       order: [['branch', 'desc']],
       group: ['branch'],
       attributes: ['branch'],
     });
 
-    return clone(builds.map(build => ({branch: build.branch})));
+    return clone(builds.map(build => ({ branch: build.branch })));
   }
 
   /**
@@ -463,7 +474,7 @@ class SqlStorageMethod {
    * @return {Promise<LHCI.ServerCommand.Build>}
    */
   async createBuild(unsavedBuild) {
-    const {buildModel} = this._sql();
+    const { buildModel } = this._sql();
     if (unsavedBuild.lifecycle !== 'unsealed') throw new E422('Invalid lifecycle value');
 
     const existingWhere = {
@@ -471,10 +482,10 @@ class SqlStorageMethod {
       branch: unsavedBuild.branch,
       hash: unsavedBuild.hash,
     };
-    const existingForHash = await buildModel.findOne({where: existingWhere});
+    const existingForHash = await buildModel.findOne({ where: existingWhere });
     if (existingForHash) throw new E422(`Build already exists for hash "${unsavedBuild.hash}"`);
 
-    const build = await buildModel.create({...unsavedBuild, id: uuid.v4()});
+    const build = await buildModel.create({ ...unsavedBuild, id: uuid.v4() });
     return clone(this._value(build));
   }
 
@@ -485,11 +496,11 @@ class SqlStorageMethod {
    */
   // eslint-disable-next-line no-unused-vars
   async sealBuild(projectId, buildId) {
-    const {sequelize, buildModel, runModel} = this._sql();
+    const { sequelize, buildModel, runModel } = this._sql();
     let build = await this._findByPk(buildModel, buildId);
     if (!build) throw new E422('Invalid build');
     if (build.projectId !== projectId) throw new E422('Invalid project');
-    build = {...clone(build), lifecycle: 'sealed'};
+    build = { ...clone(build), lifecycle: 'sealed' };
 
     log('[sealBuild] validating buildId');
     const runs = await this.getRuns(projectId, buildId);
@@ -500,14 +511,14 @@ class SqlStorageMethod {
 
     try {
       log('[sealBuild] updating lifecycle');
-      await buildModel.update({lifecycle: 'sealed'}, {where: {id: build.id}, transaction});
+      await buildModel.update({ lifecycle: 'sealed' }, { where: { id: build.id }, transaction });
 
       log('[sealBuild] creating statistics');
-      const {representativeRuns} = await StorageMethod.createStatistics(this, build, {transaction});
+      const { representativeRuns } = await StorageMethod.createStatistics(this, build, { transaction });
       const runIds = representativeRuns.map(run => run.id);
 
       log('[sealBuild] updating run representative flag');
-      await runModel.update({representative: true}, {where: {id: {[Op.in]: runIds}}, transaction});
+      await runModel.update({ representative: true }, { where: { id: { [Op.in]: runIds } }, transaction });
 
       log('[sealBuild] committing transaction');
       await transaction.commit();
@@ -523,9 +534,9 @@ class SqlStorageMethod {
    * @return {Promise<LHCI.ServerCommand.Build[]>}
    */
   async findBuildsBeforeTimestamp(runAt) {
-    const {buildModel} = this._sql();
+    const { buildModel } = this._sql();
     const oldBuilds = await buildModel.findAll({
-      where: {runAt: {[Op.lte]: runAt}},
+      where: { runAt: { [Op.lte]: runAt } },
       order: [['runAt', 'ASC']],
     });
     return oldBuilds.map(this._value);
@@ -537,7 +548,7 @@ class SqlStorageMethod {
    * @return {Promise<void>}
    */
   async deleteBuild(projectId, buildId) {
-    const {sequelize, buildModel, runModel, statisticModel} = this._sql();
+    const { sequelize, buildModel, runModel, statisticModel } = this._sql();
     const build = await this._findByPk(buildModel, buildId);
     if (!build) throw new E422('Invalid build ID');
     if (build.projectId !== projectId) throw new E422('Invalid project ID');
@@ -545,9 +556,9 @@ class SqlStorageMethod {
     const transaction = await sequelize.transaction();
 
     try {
-      await statisticModel.destroy({where: {projectId, buildId}, transaction});
-      await runModel.destroy({where: {projectId, buildId}, transaction});
-      await buildModel.destroy({where: {id: buildId}, transaction});
+      await statisticModel.destroy({ where: { projectId, buildId }, transaction });
+      await runModel.destroy({ where: { projectId, buildId }, transaction });
+      await buildModel.destroy({ where: { id: buildId }, transaction });
 
       await transaction.commit();
     } catch (err) {
@@ -562,7 +573,7 @@ class SqlStorageMethod {
    * @return {Promise<LHCI.ServerCommand.Build | undefined>}
    */
   async findBuildById(projectId, buildId) {
-    const {buildModel} = this._sql();
+    const { buildModel } = this._sql();
     if (isUuid(buildId)) {
       const build = await this._findByPk(buildModel, buildId);
       if (build && build.projectId !== projectId) return undefined;
@@ -586,7 +597,7 @@ class SqlStorageMethod {
     const lowerUuid = formatAsUuid(prefix, '0');
     const upperUuid = formatAsUuid(prefix, 'f');
     const builds = await buildModel.findAll({
-      where: {id: {[Op.gte]: lowerUuid, [Op.lte]: upperUuid}, projectId},
+      where: { id: { [Op.gte]: lowerUuid, [Op.lte]: upperUuid }, projectId },
       limit: 2,
     });
 
@@ -600,14 +611,14 @@ class SqlStorageMethod {
    * @return {Promise<LHCI.ServerCommand.Build | undefined>}
    */
   async findAncestorBuildById(projectId, buildId) {
-    const {projectModel, buildModel} = this._sql();
+    const { projectModel, buildModel } = this._sql();
     const project = await this._findByPk(projectModel, projectId);
     const build = await this._findByPk(buildModel, buildId);
     if (!project || !build || (build && build.projectId !== projectId)) return undefined;
 
     if (build.ancestorHash) {
       const ancestorsByHash = await this._findAll(buildModel, {
-        where: {projectId: build.projectId, branch: project.baseBranch, hash: build.ancestorHash},
+        where: { projectId: build.projectId, branch: project.baseBranch, hash: build.ancestorHash },
         limit: 1,
       });
 
@@ -617,11 +628,11 @@ class SqlStorageMethod {
     const where = {
       projectId: build.projectId,
       branch: project.baseBranch,
-      id: {[Op.ne]: build.id},
+      id: { [Op.ne]: build.id },
     };
 
     const nearestBuildBefore = await this._findAll(buildModel, {
-      where: {...where, runAt: {[Op.lte]: build.runAt}},
+      where: { ...where, runAt: { [Op.lte]: build.runAt } },
       order: [['runAt', 'DESC']],
       limit: 1,
     });
@@ -631,7 +642,7 @@ class SqlStorageMethod {
     }
 
     const nearestBuildAfter = await this._findAll(buildModel, {
-      where: {...where, runAt: {[Op.gte]: build.runAt}},
+      where: { ...where, runAt: { [Op.gte]: build.runAt } },
       order: [['runAt', 'ASC']],
       limit: 1,
     });
@@ -652,9 +663,9 @@ class SqlStorageMethod {
    * @return {Promise<LHCI.ServerCommand.Run[]>}
    */
   async getRuns(projectId, buildId, options) {
-    const {runModel} = this._sql();
+    const { runModel } = this._sql();
     const runs = await this._findAll(runModel, {
-      where: {...options, projectId, buildId},
+      where: { ...options, projectId, buildId },
       order: orderByCreated,
     });
     return clone(runs);
@@ -666,15 +677,15 @@ class SqlStorageMethod {
    * @return {Promise<Array<{url: string}>>}
    */
   async getUrls(projectId, buildId) {
-    const {runModel} = this._sql();
+    const { runModel } = this._sql();
     const runs = await this._findAll(runModel, {
-      where: buildId ? {projectId, buildId} : {projectId},
+      where: buildId ? { projectId, buildId } : { projectId },
       order: [['url', 'desc']],
       group: ['url'],
       attributes: ['url'],
     });
 
-    return clone(runs.map(run => ({url: run.url})));
+    return clone(runs.map(run => ({ url: run.url })));
   }
 
   /**
@@ -682,14 +693,14 @@ class SqlStorageMethod {
    * @return {Promise<LHCI.ServerCommand.Run>}
    */
   async createRun(unsavedRun) {
-    const {runModel} = this._sql();
+    const { runModel } = this._sql();
     const build = await this.findBuildById(unsavedRun.projectId, unsavedRun.buildId);
     if (!build || build.lifecycle !== 'unsealed') throw new E422('Invalid build');
     if (typeof unsavedRun.lhr !== 'string') throw new E422('Invalid LHR');
     if (unsavedRun.representative) throw new E422('Invalid representative value');
     if (unsavedRun.url.length > 256) throw new E422('URL too long');
 
-    const run = await runModel.create({...unsavedRun, representative: false, id: uuid.v4()});
+    const run = await runModel.create({ ...unsavedRun, representative: false, id: uuid.v4() });
     return clone(this._value(run));
   }
 
@@ -709,7 +720,7 @@ class SqlStorageMethod {
    */
   async _createOrUpdateStatistic(unsavedStatistic, context) {
     const transaction = context && context.transaction;
-    const {statisticModel} = this._sql();
+    const { statisticModel } = this._sql();
     logVerbose('[_createOrUpdateStatistic] looking up existing statistic');
     const existing = this._valueOrNull(
       await statisticModel.findOne({
@@ -727,14 +738,14 @@ class SqlStorageMethod {
     let statistic;
     if (existing) {
       logVerbose('[_createOrUpdateStatistic] existing statistic found, updating data');
-      await statisticModel.update({...unsavedStatistic}, {where: {id: existing.id}, transaction});
+      await statisticModel.update({ ...unsavedStatistic }, { where: { id: existing.id }, transaction });
       const updated = await this._findByPk(statisticModel, existing.id);
       if (!updated) throw new Error('Failed to update statistic');
       statistic = updated;
     } else {
       logVerbose('[_createOrUpdateStatistic] no existing statistic found, creating one');
       statistic = this._value(
-        await statisticModel.create({...unsavedStatistic, id: uuid.v4()}, {transaction})
+        await statisticModel.create({ ...unsavedStatistic, id: uuid.v4() }, { transaction })
       );
     }
 
@@ -747,9 +758,9 @@ class SqlStorageMethod {
    * @return {Promise<Array<LHCI.ServerCommand.Statistic>>}
    */
   async _getStatistics(projectId, buildId) {
-    const {statisticModel} = this._sql();
+    const { statisticModel } = this._sql();
     const statistics = await this._findAll(statisticModel, {
-      where: {projectId, buildId},
+      where: { projectId, buildId },
       order: orderByCreated,
     });
     return clone(statistics).map(normalizeStatistic);
@@ -761,8 +772,8 @@ class SqlStorageMethod {
    * @return {Promise<void>}
    */
   async _invalidateStatistics(projectId, buildId) {
-    const {statisticModel} = this._sql();
-    await statisticModel.update({version: 0}, {where: {projectId, buildId}});
+    const { statisticModel } = this._sql();
+    await statisticModel.update({ version: 0 }, { where: { projectId, buildId } });
   }
 
   /**
@@ -770,11 +781,11 @@ class SqlStorageMethod {
    * @return {Promise<string>}
    */
   async _resetAdminToken(projectId) {
-    const {projectModel} = this._sql();
+    const { projectModel } = this._sql();
     const newToken = generateAdminToken();
     await projectModel.update(
-      {adminToken: hashAdminToken(newToken, projectId)},
-      {where: {id: projectId}}
+      { adminToken: hashAdminToken(newToken, projectId) },
+      { where: { id: projectId } }
     );
     return newToken;
   }
@@ -784,10 +795,102 @@ class SqlStorageMethod {
    * @return {Promise<string>}
    */
   async _resetProjectToken(projectId) {
-    const {projectModel} = this._sql();
+    const { projectModel } = this._sql();
     const newToken = uuid.v4();
-    await projectModel.update({token: newToken}, {where: {id: projectId}});
+    await projectModel.update({ token: newToken }, { where: { id: projectId } });
     return newToken;
+  }
+
+  /**
+   * Get all monitored pages for a project
+   * @param {string} projectId
+   * @return {Promise<Array<LHCI.ServerCommand.MonitoredPage>>}
+   */
+  async getMonitoredPages(projectId) {
+    const { monitoredPageModel } = this._sql();
+    const pages = await this._findAll(monitoredPageModel, {
+      where: { projectId },
+      order: [['createdAt', 'DESC']],
+    });
+    return clone(pages);
+  }
+
+  /**
+   * Get a single monitored page
+   * @param {string} projectId
+   * @param {string} pageId
+   * @return {Promise<LHCI.ServerCommand.MonitoredPage | null>}
+   */
+  async getMonitoredPage(projectId, pageId) {
+    const { monitoredPageModel } = this._sql();
+    const page = await this._findByPk(monitoredPageModel, pageId);
+    if (!page || page.projectId !== projectId) return null;
+    return clone(page);
+  }
+
+  /**
+   * Create a new monitored page
+   * @param {StrictOmit<LHCI.ServerCommand.MonitoredPage, 'id'>} unsavedPage
+   * @return {Promise<LHCI.ServerCommand.MonitoredPage>}
+   */
+  async createMonitoredPage(unsavedPage) {
+    const { monitoredPageModel } = this._sql();
+
+    if (!unsavedPage.url || !unsavedPage.label) {
+      throw new E422('URL and label are required');
+    }
+
+    const page = await monitoredPageModel.create({
+      ...unsavedPage,
+      id: uuid.v4(),
+    });
+
+    return clone(this._value(page));
+  }
+
+  /**
+   * Update a monitored page
+   * @param {string} pageId
+   * @param {Partial<LHCI.ServerCommand.MonitoredPage>} updates
+   * @return {Promise<void>}
+   */
+  async updateMonitoredPage(pageId, updates) {
+    const { monitoredPageModel } = this._sql();
+
+    // Remove fields that shouldn't be updated directly
+    const safeUpdates = omit(updates, ['id', 'projectId', 'createdAt'], { dropUndefined: true });
+
+    await monitoredPageModel.update(safeUpdates, { where: { id: pageId } });
+  }
+
+  /**
+   * Delete a monitored page
+   * @param {string} projectId
+   * @param {string} pageId
+   * @return {Promise<void>}
+   */
+  async deleteMonitoredPage(projectId, pageId) {
+    const { monitoredPageModel } = this._sql();
+    const page = await this._findByPk(monitoredPageModel, pageId);
+
+    if (!page || page.projectId !== projectId) {
+      throw new E422('Invalid page ID');
+    }
+
+    await monitoredPageModel.destroy({ where: { id: pageId } });
+  }
+
+  /**
+   * Get all enabled monitored pages (for cron scheduling)
+   * @return {Promise<Array<LHCI.ServerCommand.MonitoredPage>>}
+   */
+  async getEnabledMonitoredPages() {
+    const { monitoredPageModel } = this._sql();
+    const pages = await this._findAll(monitoredPageModel, {
+      where: { enabled: true },
+      order: [['nextRunAt', 'ASC']],
+    });
+    return clone(pages);
   }
 }
 
