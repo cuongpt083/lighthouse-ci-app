@@ -16,11 +16,12 @@ const compression = require('compression');
 const bodyParser = require('body-parser');
 const ApiClient = require('@lhci/utils/src/api-client.js');
 const createProjectsRouter = require('./api/routes/projects.js');
+const createMonitoredPagesRouter = require('./api/routes/monitored-pages.js');
 const createViewerRouter = require('./api/routes/viewer.js');
 const StorageMethod = require('./api/storage/storage-method.js');
-const {errorMiddleware, createBasicAuthMiddleware} = require('./api/express-utils.js');
-const {startPsiCollectCron} = require('./cron/psi-collect.js');
-const {startDeleteOldBuildsCron} = require('./cron/delete-old-builds');
+const { errorMiddleware, createBasicAuthMiddleware } = require('./api/express-utils.js');
+const { startPsiCollectCron } = require('./cron/psi-collect.js');
+const { startDeleteOldBuildsCron } = require('./cron/delete-old-builds');
 const version = require('../package.json').version;
 
 const DIST_FOLDER = path.join(__dirname, '../dist');
@@ -30,14 +31,14 @@ const DIST_FOLDER = path.join(__dirname, '../dist');
  * @return {Promise<{app: Parameters<typeof createHttpServer>[1], storageMethod: StorageMethod}>}
  */
 async function createApp(options) {
-  const {storage, useBodyParser} = options;
+  const { storage, useBodyParser } = options;
 
   log('[createApp] initializing storage method');
   const storageMethod = StorageMethod.from(storage);
   await storageMethod.initialize(storage);
 
   log('[createApp] creating express app');
-  const context = {storageMethod, options};
+  const context = { storageMethod, options };
   const app = express();
   if (options.logLevel !== 'silent') app.use(morgan('short'));
 
@@ -48,7 +49,7 @@ async function createApp(options) {
     // 1. Optional if you want to overwrite by other middleware like koa or fastify
     // 2. Support large payloads because LHRs are big.
     // 3. Support JSON primitives because `PUT /builds/<id>/lifecycle "sealed"`
-    app.use(bodyParser.json({limit: '10mb', strict: false}));
+    app.use(bodyParser.json({ limit: '10mb', strict: false }));
   }
 
   // Add a health check route before auth
@@ -61,6 +62,7 @@ async function createApp(options) {
   app.get('/', (_, res) => res.redirect('/app'));
   app.use('/version', (_, res) => res.send(version));
   app.use('/v1/projects', createProjectsRouter(context));
+  app.use('/v1/projects', createMonitoredPagesRouter(context));
   app.use('/v1/viewer', createViewerRouter(options));
   app.use('/app', express.static(DIST_FOLDER));
   app.get('/app/*', (_, res) => res.sendFile(path.join(DIST_FOLDER, 'index.html')));
@@ -70,7 +72,7 @@ async function createApp(options) {
   startPsiCollectCron(storageMethod, options);
   startDeleteOldBuildsCron(storageMethod, options);
 
-  return {app, storageMethod};
+  return { app, storageMethod };
 }
 
 /**
@@ -78,7 +80,7 @@ async function createApp(options) {
  * @return {Promise<ServerInstance>}
  */
 async function createServer(options) {
-  const {app, storageMethod} = await createApp(options);
+  const { app, storageMethod } = await createApp(options);
 
   return new Promise((resolve, reject) => {
     const server = createHttpServer(app);
@@ -120,4 +122,4 @@ async function createServer(options) {
   });
 }
 
-module.exports = {createApp, createServer, ApiClient};
+module.exports = { createApp, createServer, ApiClient };
